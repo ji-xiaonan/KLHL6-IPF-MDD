@@ -1,0 +1,119 @@
+library(clusterProfiler)
+library(org.Hs.eg.db)
+library(enrichplot)
+library(ggplot2)
+library(circlize)
+library(RColorBrewer)
+library(dplyr)
+library(ComplexHeatmap)
+
+# 筛选阈值
+pvalueFilter = 0.05       # 原始 p 值阈值
+adjPvalFilter = 0.05      # 多重校正后的 p 值（FDR）阈值
+
+# 设置使用的显著性列：优先使用 FDR
+colorSel = "p.adjust"
+if (adjPvalFilter > 0.05) colorSel = "pvalue"
+
+# 设置工作目录与读取基因列表
+setwd("C:\\Users\\lexb\\Desktop\\geoARG\\08.GO")
+rt = read.table("interGene.txt", header = FALSE, sep = "\t", check.names = FALSE)
+
+genes = unique(as.vector(rt[,1]))                               
+
+ # 提取基因名
+entrezIDs = mget(genes, org.Hs.egSYMBOL2EG, ifnotfound = NA)     
+
+# SYMBOL → Entrez ID
+entrezIDs = as.character(entrezIDs)
+rt = cbind(rt, entrezIDs)                                        
+
+# 添加 Entrez ID
+rt = rt[rt[,"entrezIDs"] != "NA",]                              
+
+ # 删除无法匹配的行
+gene = rt$entrezID
+
+kk = enrichGO(gene = gene,
+              OrgDb = org.Hs.eg.db,
+              pvalueCutoff = 1,
+              qvalueCutoff = 1,
+              ont = "all", readable = TRUE)     # 三类本体同时分析：BP/CC/MF
+
+GO = as.data.frame(kk)  # 转换为数据框
+GO = GO[(GO$pvalue < pvalueFilter & GO$p.adjust < adjPvalFilter), ]  # 筛选显著结果
+write.table(GO, file = "GO.txt", sep = "\t", quote = FALSE, row.names = FALSE)  # 保存
+
+# 柱状图：按 GO 本体分类分面显示（最多 10 个条目）
+pdf(file = "barplot.pdf", width = 10, height = 7)
+bar = barplot(kk, drop = TRUE, showCategory = 10, label_format = 30,
+              split = "ONTOLOGY", color = colorSel) +
+       facet_grid(ONTOLOGY ~ ., scale = 'free')
+print(bar)
+dev.off()
+
+# 气泡图：基于富集基因比例排序
+pdf(file = "bubble.pdf", width = 10, height = 7)
+bub = dotplot(kk, showCategory = 10, orderBy = "GeneRatio", label_format = 30,
+              split = "ONTOLOGY", color = colorSel) +
+       facet_grid(ONTOLOGY ~ ., scale = 'free')
+print(bub)
+dev.off()
+
+# 设置颜色及分类筛选
+ontology.col = c("#00AFBB", "#E7B800", "#90EE90")
+data = GO[order(GO$pvalue), ]
+datasig = data[data$pvalue < 0.05,, drop = FALSE]
+BP = head(datasig[datasig$ONTOLOGY == "BP", , drop = FALSE], 6)
+CC = head(datasig[datasig$ONTOLOGY == "CC", , drop = FALSE], 6)
+MF = head(datasig[datasig$ONTOLOGY == "MF", , drop = FALSE], 6)
+data = rbind(BP, CC, MF)
+main.col = ontology.col[as.numeric(as.factor(data$ONTOLOGY))]
+
+# 计算富集比例和显著性映射色
+BgGene = as.numeric(sapply(strsplit(data$BgRatio,"/"),'[',1))
+Gene = as.numeric(sapply(strsplit(data$GeneRatio,'/'),'[',1))
+ratio = Gene / BgGene
+logpvalue = -log(data$pvalue, 10)
+logpvalue.col = brewer.pal(n = 8, name = "Reds")
+f = colorRamp2(breaks = c(0,2,4,6,8,10,15,20), colors = logpvalue.col)
+BgGene.col = f(logpvalue)
+
+# 创建 circos 数据框
+df = data.frame(GO = data$ID, start = 1, end = max(BgGene)); rownames(df) = df$GO
+bed2 = data.frame(GO = data$ID, start = 1, end = BgGene, BgGene = BgGene, BgGene.col = BgGene.col)
+bed3 = data.frame(GO = data$ID, start = 1, end = Gene, BgGene = Gene)
+bed4 = data.frame(GO = data$ID, start = 1, end = max(BgGene), ratio = ratio, col = main.col)
+bed4$ratio = bed4$ratio / max(bed4$ratio) * 9.5  # 归一化比例高度
+
+# 中间图例：说明颜色与图形含义
+middle.legend = Legend(
+  labels = c('Number of Genes', 'Number of Select', 'Rich Factor(0-1)'),
+  type = "points", pch = c(15, 15, 17),
+  legend_gp = gpar(col = c('pink', '#BA55D3', ontology.col[1])),
+  title = "", nrow = 3, size = unit(3, "mm")
+)
+draw(middle.legend, x = unit(1, "snpc") * 0.42)
+
+# 主图例：GO 分类
+main.legend = Legend(
+  labels = c("Biological Process", "Cellular Component", "Molecular Function"),
+  type = "points", pch = 15,
+  legend_gp = gpar(col = ontology.col),
+  title_position = "topcenter", title = "ONTOLOGY", nrow = 3,
+  grid_height = unit(5, "mm"), grid_width = unit(5, "mm")
+)
+
+# P 值图例：-log10(Pvalue) 映射
+logp.legend = Legend(
+  labels = c('(0,2]', '(2,4]', '(4,6]', '(6,8]', '(8,10]', '(10,15]', '(15,20]', '>=20'),
+  type = "points", pch = 16, legend_gp = gpar(col = logpvalue.col),
+  title = "-log10(Pvalue)", title_position = "topcenter",
+  grid_height = unit(5, "mm"), grid_width = unit(5, "mm"),
+  size = unit(3, "mm")
+)
+
+# 打包图例并绘制
+lgd = packLegend(main.legend, logp.legend)
+draw(lgd, x = unit(1, "snpc") * 0.85, y = unit(1, "snpc") * 0.55, just = "left")
+dev.off()

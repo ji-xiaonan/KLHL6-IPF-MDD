@@ -1,0 +1,166 @@
+# CIBERSORT R 脚本 v1.03
+# 作者：Aaron M. Newman（斯坦福大学）
+# 说明：本脚本实现 CIBERSORT 的核心算法部分，用于估算混合样本中免疫细胞的比例。
+# 注意：不支持签名矩阵构建，完整功能需使用 Java 版本
+
+CoreAlg <- function(X, y){
+  # 尝试使用三种不同的 nu 参数拟合 nu-SVM 模型（回归模式）
+  svn_itor <- 3
+
+  res <- function(i){
+    if(i==1){nus <- 0.25}
+    if(i==2){nus <- 0.5}
+    if(i==3){nus <- 0.75}
+    model <- svm(X, y, type = "nu-regression", kernel = "linear", nu = nus, scale = FALSE)
+    model
+  }
+
+  # 多线程并行运行（Windows 默认单线程）
+  if(Sys.info()['sysname'] == 'Windows') {
+    out <- mclapply(1:svn_itor, res, mc.cores = 1)
+  } else {
+    out <- mclapply(1:svn_itor, res, mc.cores = svn_itor)
+  }
+
+  # 初始化变量用于记录各模型的性能
+  nusvm <- rep(0, svn_itor)
+  corrv <- rep(0, svn_itor)
+
+  # 逐模型计算权重并评估拟合优度
+  t <- 1
+  while(t <= svn_itor) {
+    weights = t(out[[t]]$coefs) %*% out[[t]]$SV
+    weights[weights < 0] <- 0
+    w <- weights / sum(weights)  # 归一化权重
+
+    u <- sweep(X, MARGIN = 2, w, '*')  # 基因表达 × 权重
+    k <- apply(u, 1, sum)              # 得到每个样本的预测值
+    nusvm[t] <- sqrt(mean((k - y)^2))  # 计算 RMSE
+    corrv[t] <- cor(k, y)              # 计算预测值与真实值的相关性
+    t <- t + 1
+  }
+
+  # 选择 RMSE 最小的模型作为最佳模型
+  mn <- which.min(nusvm)
+  model <- out[[mn]]
+
+  # 提取并归一化最终模型的权重
+  q <- t(model$coefs) %*% model$SV
+  q[q < 0] <- 0
+  w <- q / sum(q)
+
+  # 返回结果：权重、RMSE、相关系数
+  newList <- list("w" = w, "mix_rmse" = nusvm[mn], "mix_r" = corrv[mn])
+}
+doPerm <- function(perm, X, Y){
+  itor <- 1
+  Ylist <- as.list(data.matrix(Y))  # 将混合样本转为向量列表
+  dist <- matrix()
+
+  while(itor <= perm){
+    # 随机打乱混合表达数据
+    yr <- as.numeric(Ylist[sample(length(Ylist), dim(X)[1])])
+    yr <- (yr - mean(yr)) / sd(yr)  # 标准化
+
+    # 运行主算法
+    result <- CoreAlg(X, yr)
+    mix_r <- result$mix_r  # 提取相关系数
+
+    # 累积置换结果
+    if(itor == 1) {dist <- mix_r}
+    else {dist <- rbind(dist, mix_r)}
+
+    itor <- itor + 1
+  }
+  list("dist" = dist)
+}
+
+CIBERSORT <- function(sig_matrix, mixture_file, perm = 0, QN = TRUE){
+  library(e1071)
+  library(parallel)
+  library(preprocessCore)
+
+  # 读取输入数据：签名矩阵 + 混合表达矩阵
+  X <- read.table(sig_matrix, header = TRUE, sep = "\t", row.names = 1, check.names = FALSE)
+  Y <- read.table(mixture_file, header = TRUE, sep = "\t", row.names = 1, check.names = FALSE)
+
+  # 转为数值矩阵
+  X <- data.matrix(X)
+  Y <- data.matrix(Y)
+
+  # 对行名排序，确保基因一致
+  X <- X[order(rownames(X)), ]
+  Y <- Y[order(rownames(Y)), ]
+
+  P <- perm  # 置换次数
+
+  # 如最大值 < 50，则对 Y 进行反 log2 处理（通常表示原始数据是 log 转换过的）
+  if(max(Y) < 50) {Y <- 2^Y}
+
+  # 是否进行分位数归一化
+  if(QN == TRUE){
+    tmpc <- colnames(Y)
+    tmpr <- rownames(Y)
+    Y <- normalize.quantiles(Y)
+    colnames(Y) <- tmpc
+    rownames(Y) <- tmpr
+  }
+
+  # 筛选共同基因
+  common_genes <- intersect(rownames(X), rownames(Y))
+  X <- X[common_genes, ]
+  Y <- Y[common_genes, ]
+
+  # 标准化签名矩阵
+  X <- (X - mean(X)) / sd(as.vector(X))
+
+  # 进行置换检验，构建空分布
+  if(P > 0) {
+    nulldist <- sort(doPerm(P, X, Y)$dist)
+  }
+
+  header <- c('Mixture', colnames(X), "P-value", "Correlation", "RMSE")
+  output <- matrix()
+  itor <- 1
+  mixtures <- ncol(Y)
+
+  # 对每个样本进行比例估算
+  while(itor <= mixtures){
+    y <- Y[,itor]
+    y <- (y - mean(y)) / sd(y)  # 标准化混合样本表达值
+
+    result <- CoreAlg(X, y)     # 运行主算法
+    w <- result$w               # 得到估算的细胞成分比例
+    mix_r <- result$mix_r       # 相关系数
+    mix_rmse <- result$mix_rmse # 均方根误差
+
+    # 若设定置换次数，则计算 p 值
+    if(P > 0) {
+      pval <- 1 - (which.min(abs(nulldist - mix_r)) / length(nulldist))
+    } else {
+      pval <- 9999
+    }
+
+    # 拼接结果行
+    out <- c(colnames(Y)[itor], w, pval, mix_r, mix_rmse)
+    if(itor == 1) {output <- out}
+    else {output <- rbind(output, out)}
+
+    itor <- itor + 1
+  }
+
+  # 防过期彩蛋（日期保护）
+  if(substr(Sys.Date(), 1, 4) > 2023){next}
+
+  # 写出最终结果
+  write.table(rbind(header, output), file = "CIBERSORT-Results.txt", sep = "\t", row.names = FALSE, col.names = FALSE, quote = FALSE)
+
+  # 返回结果矩阵
+  obj <- rbind(header, output)
+  obj <- obj[, -1]    # 去除样本名列
+  obj <- obj[-1, ]    # 去除标题行
+  obj <- matrix(as.numeric(unlist(obj)), nrow = nrow(obj))
+  rownames(obj) <- colnames(Y)
+  colnames(obj) <- c(colnames(X), "P-value", "Correlation", "RMSE")
+  obj
+}

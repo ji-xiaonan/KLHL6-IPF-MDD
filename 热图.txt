@@ -1,0 +1,48 @@
+# 如果未安装以下包，请先取消注释进行安装
+# if (!requireNamespace("BiocManager", quietly = TRUE)) install.packages("BiocManager")
+# BiocManager::install("limma")
+# install.packages("pheatmap")
+
+# 加载所需的包
+library(limma)       # 提供表达矩阵处理函数（如 avereps）
+library(pheatmap)    # 用于绘制热图
+
+# 设置输入文件路径和工作目录
+expFile = "normalize.txt"      # 表达矩阵文件（行为基因，列为样本，第一列为基因名）
+geneFile = "interGene.txt"     # 候选基因列表（每行一个基因名）
+setwd("C:\\Users\\lexb\\Desktop\\geoARG\\07.heatmap")   # 设置工作路径
+
+# 读取表达矩阵，并将其转为数值型矩阵
+rt = read.table(expFile, header = TRUE, sep = "\t", check.names = FALSE)
+rt = as.matrix(rt)
+rownames(rt) = rt[,1]             # 将第一列基因名作为行名
+exp = rt[,2:ncol(rt)]             # 去除第一列基因名，仅保留表达值
+dimnames = list(rownames(exp), colnames(exp))  # 设置行列名
+data = matrix(as.numeric(as.matrix(exp)), nrow = nrow(exp), dimnames = dimnames)
+
+# 如果有多个探针对应一个基因，进行平均（需要 limma 包）
+data = avereps(data)
+
+# 读取候选基因列表，并筛选表达矩阵中相应行
+geneRT = read.table(geneFile, header = FALSE, sep = "\t", check.names = FALSE)
+data = data[as.vector(geneRT[,1]), ]
+
+# 提取样本分组信息（默认样本名形如：SampleID_Group，如：S01_Control）
+Type = gsub("(.*)\\_(.*)", "\\2", colnames(data))
+names(Type) = colnames(data)   # 样本名为列表名
+Type = as.data.frame(Type)     # 转为数据框用于热图注释
+
+# 绘制热图并保存为 PDF
+pdf(file = "heatmap.pdf", width = 8, height = 5)
+pheatmap(
+  data,
+  annotation = Type,    # 样本分组注释（列注释）
+  color = colorRampPalette(c(rep("blue", 3), "white", rep("red", 3)))(50),  # 蓝白红配色
+  cluster_cols = FALSE,      # 不对样本列聚类
+  show_colnames = FALSE,     # 不显示列名（样本名）
+  scale = "row",             # 行标准化（基因表达值转为Z分数）
+  fontsize = 7,              # 整体字体大小
+  fontsize_row = 5,          # 行名字体大小
+  fontsize_col = 7           # 列名字体大小（此处因隐藏列名无影响）
+)
+dev.off()

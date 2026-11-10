@@ -1,0 +1,125 @@
+# ========================== Step 0: 加载必要包 ==========================
+library(e1071)    # SVM实现
+library(readxl)   # 用于读取 .xls 文件
+library(ggplot2)
+
+# ========================== Step 1: 读取和整理数据 ==========================
+
+# 设置路径
+file_path <- "D:/360MoveData/Users/HUAWEI/Desktop/1/exp.xls"
+output_dir <- "D:/360MoveData/Users/HUAWEI/Desktop/1/"
+
+# 读取数据（因为是xls，所以用readxl包）
+raw_data <- read_excel(file_path)
+
+# 只保留需要的列：group 和基因表达
+data <- raw_data[, c("group", "PNOC", "HMGCS1", "FGD2", "KLHL6", "FCMR")]
+
+# 分组变量转为数值：IPF = 1, Control = 0
+data$group <- ifelse(data$group == "IPF", 1, 0)
+
+# 将数据框转为标准矩阵（行为样本，列为特征）
+data <- as.data.frame(data)
+
+# ========================== Step 2: 定义函数（svmRFE 及辅助函数） ==========================
+
+svmRFE.wrap <- function(test.fold, X, ...) {
+  train.data = X[-test.fold, ]
+  test.data  = X[test.fold, ]
+  features.ranked = svmRFE(train.data, ...)
+  return(list(feature.ids=features.ranked, train.data.ids=row.names(train.data), test.data.ids=row.names(test.data)))
+}
+
+svmRFE <- function(X, k=1, halve.above=5000) {
+  n = ncol(X) - 1
+  X[, -1] = scale(X[, -1])
+  pb = txtProgressBar(1, n, 1, style=3)
+  i.surviving = 1:n
+  i.ranked    = n
+  ranked.list = vector(length=n)
+  while(length(i.surviving) > 0) {
+    if(k > 1) {
+      folds = rep(1:k, len=nrow(X))[sample(nrow(X))]
+      folds = lapply(1:k, function(x) which(folds == x))
+      w = lapply(folds, getWeights, X[, c(1, 1+i.surviving)])
+      w = do.call(rbind, w)
+      w = t(apply(w, 1, function(x) x / sqrt(sum(x^2))))
+      v    = w * w
+      vbar = apply(v, 2, mean)
+      vsd  = apply(v, 2, sd)
+      c    = vbar / vsd
+    } else {
+      w = getWeights(NULL, X[, c(1, 1+i.surviving)])
+      c = w * w
+    }
+    ranking = sort(c, index.return=TRUE)$ix
+    if(length(i.surviving) == 1) ranking = 1
+    if(length(i.surviving) > halve.above) {
+      nfeat = length(i.surviving)
+      ncut  = round(nfeat / 2)
+      n     = nfeat - ncut
+      setTxtProgressBar(pb, n)
+    } else {
+      ncut = 1
+    }
+    ranked.list[i.ranked:(i.ranked-ncut+1)] = i.surviving[ranking[1:ncut]]
+    i.ranked    = i.ranked - ncut
+    i.surviving = i.surviving[-ranking[1:ncut]]
+    setTxtProgressBar(pb, n - length(i.surviving))
+  }
+  close(pb)
+  return(ranked.list)
+}
+
+getWeights <- function(test.fold, X) {
+  train.data = X
+  if(!is.null(test.fold)) train.data = X[-test.fold, ]
+  model = svm(train.data[, -1], train.data[, 1], cost=10, cachesize=500,
+              scale=F, type="C-classification", kernel="linear")
+  t(model$coefs) %*% model$SV
+}
+
+WriteFeatures <- function(results, input, save=TRUE, file='features_ranked.txt') {
+  featureID = sort(apply(sapply(results, function(x) sort(x$feature.ids, index.return=TRUE)$ix), 1, mean), index=TRUE)$ix
+  avg.rank  = sort(apply(sapply(results, function(x) sort(x$feature.ids, index.return=TRUE)$ix), 1, mean), index=TRUE)$x
+  feature.name = colnames(input[, -1])[featureID]
+  features.ranked = data.frame(FeatureName=feature.name, FeatureID=featureID, AvgRank=avg.rank)
+  if(save) write.table(features.ranked, file=file, quote=FALSE, row.names=FALSE, sep="\t")
+  return(features.ranked)
+}
+
+FeatSweep.wrap <- function(i, results, input) {
+  svm.list = lapply(results, function(x) tune(svm,
+                                              train.x      = input[x$train.data.ids, 1+x$feature.ids[1:i]],
+                                              train.y      = input[x$train.data.ids, 1],
+                                              validation.x = input[x$test.data.ids,  1+x$feature.ids[1:i]],
+                                              validation.y = input[x$test.data.ids,  1],
+                                              ranges       = list(gamma=2^(-12:0), cost=2^(-6:6)),
+                                              tunecontrol  = tune.control(sampling='fix'))$perf)
+  error = mean(sapply(svm.list, function(x) x$error))
+  return(list(svm.list=svm.list, error=error))
+}
+
+# ========================== Step 3: 执行 SVM-RFE 多折特征选择 ==========================
+
+set.seed(2024)
+folds <- sample(1:5, nrow(data), replace = TRUE)
+
+results <- lapply(1:5, function(f) svmRFE.wrap(which(folds == f), data, k=1))
+
+# 保存特征排名
+features_table <- WriteFeatures(results, data, save = TRUE, 
+                                file = paste0(output_dir, "features_ranked.txt"))
+
+# ========================== Step 4: 绘制误差变化曲线 ==========================
+
+errors <- sapply(1:ncol(data[, -1]), function(i) FeatSweep.wrap(i, results, data)$error)
+
+# 保存为PDF
+pdf(paste0(output_dir, "SVMRFE_CV_Error_Curve.pdf"), width=6, height=5)
+plot(errors, type='o', col='blue', pch=16, xlab="Number of Features", ylab="Cross-Validation Error",
+     main="SVM-RFE CV Error vs. Feature Count")
+points(which.min(errors), min(errors), col="red", pch=19)
+text(which.min(errors), min(errors), labels=paste0("Best: ", which.min(errors)), pos=3, col="red")
+abline(h=0.5, lty=2, col="gray")
+dev.off()

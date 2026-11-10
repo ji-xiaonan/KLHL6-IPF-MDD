@@ -1,0 +1,53 @@
+# install.packages("glmnet")
+# install.packages("pROC")
+# install.packages("ggsci")
+
+# 加载所需的 R 包
+library(glmnet)    # 用于构建 LASSO 等回归模型（虽然本段未直接使用）
+library(pROC)      # 用于绘制和分析 ROC 曲线
+library(ggsci)     # 提供科学杂志风格的颜色主题，适合绘图美化
+
+# 设置输入文件路径和工作目录
+riskFile = "nomoRisk.txt"     # 风险评分及临床特征数据（行：样本，列：变量，含Type列表示分组）
+setwd("C:\\Users\\lexb\\Desktop\\geoARG\\16.ROC")   # 设置当前工作路径
+
+# 读取输入数据
+rt = read.table(riskFile, header = TRUE, sep = "\t", check.names = FALSE, row.names = 1)
+
+# 将性别字段统一编码（Female = 0，Male = 1）
+rt$Gender = ifelse(rt$Gender == "Female", 0, 1)
+
+# 提取样本的分类标签（例如：0=对照，1=病例）
+y = rt[,"Type"]
+
+# 获取配色方案（来自 Simpsons 配色），适用于多个变量的 ROC 曲线绘图
+bioCol = pal_simpsons(palette = "springfield", alpha = 1)(length(2:ncol(rt)))
+
+# 初始化用于保存每个变量 AUC 的文字列表
+aucText = c()
+k = 0  # 曲线计数器
+
+# 对每一个变量（除第一列 Type 外）绘制 ROC 曲线
+for(x in colnames(rt)[2:ncol(rt)]) {
+  k = k + 1
+  # 计算当前变量的 ROC 曲线
+  roc1 = roc(y, as.numeric(rt[,x]))
+
+  if(k == 1){
+    # 第一次绘图，新建图形文件
+    pdf(file = "ROC.pdf", width = 5.5, height = 4.8)
+    plot(roc1, print.auc = FALSE, col = bioCol[k], legacy.axes = TRUE, main = "")
+  } else {
+    # 后续变量在同一张图上叠加绘图
+    plot(roc1, print.auc = FALSE, col = bioCol[k], legacy.axes = TRUE, main = "", add = TRUE)
+  }
+
+  # 记录 AUC 值，用于图例说明
+  aucText = c(aucText, paste0(x, ", AUC=", sprintf("%.3f", roc1$auc[1])))
+}
+
+# 添加图例（标注每条曲线的变量名与 AUC 值）
+legend("bottomright", aucText, lwd = 2, bty = "n", col = bioCol, cex = 0.7)
+
+# 关闭 PDF 输出
+dev.off()

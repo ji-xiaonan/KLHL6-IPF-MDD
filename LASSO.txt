@@ -1,0 +1,65 @@
+# 安装所需的包（已注释掉，如尚未安装，请取消注释后运行）
+# install.packages("glmnet")
+
+# 加载 glmnet 包用于 LASSO 回归
+library(glmnet)
+
+# 设置输入文件路径
+inputFile = "normalize.txt"      # 归一化后的表达矩阵文件（行：基因，列：样本）
+geneFile = "interGene.txt"       # 待筛选的候选基因列表（仅包含基因名）
+
+# 设置工作目录
+setwd("C:\\Users\\lexb\\Desktop\\geoARG\\12.lasso")
+
+# 读取表达矩阵文件
+data = read.table(inputFile, header = TRUE, sep = "\t", check.names = FALSE, row.names = 1)
+
+# 读取候选基因列表，并筛选表达矩阵中的相应基因
+geneRT = read.table(geneFile, header = FALSE, sep = "\t", check.names = FALSE)
+data = data[as.vector(geneRT[, 1]), ]
+
+# 转置表达矩阵：行变为样本，列变为基因
+data = t(data)
+
+# 提取样本分组信息（假设样本名格式为：样本ID_分组，如：S1_Control）
+group = gsub("(.*)\\_(.*)", "\\2", row.names(data))
+
+# 构建带标签的数据框
+rt = as.data.frame(data)
+rt$Type = ifelse(group == "Control", 0, 1)  # Control 为 0，其他为 1
+
+# 构建设计矩阵和标签向量
+x = as.matrix(rt[, 1:(ncol(rt) - 1)])   # 特征变量
+y = rt[, "Type"]                        # 因变量（二分类）
+
+# 拟合 LASSO 模型
+fit = glmnet(x, y, family = "binomial", alpha = 1)
+
+# 保存 LASSO 路径图（展示不同 λ 值下的系数变化）
+pdf(file = "lasso.pdf", width = 6, height = 5.5)
+plot(fit)
+dev.off()
+
+# 进行 10 折交叉验证，选择最优 λ 值
+cvfit = cv.glmnet(x, y, family = "binomial", alpha = 1, type.measure = 'deviance', nfolds = 10)
+
+# 保存交叉验证结果图（展示 lambda 与 deviance 的关系）
+pdf(file = "cvfit.pdf", width = 6, height = 5.5)
+plot(cvfit)
+dev.off()
+
+# 提取交叉验证下最优 λ 值对应的非零系数基因
+coef = coef(fit, s = cvfit$lambda.min)
+index = which(coef != 0)
+lassoGene = row.names(coef)[index]
+lassoGene = lassoGene[-1]  # 去除截距项
+
+# 保存筛选出的特征基因列表
+write.table(lassoGene, file = "lasso.gene.txt", sep = "\t", quote = FALSE, row.names = FALSE, col.names = FALSE)
+
+# 提取对应基因表达量并添加分组标签
+outTab = rt[, c(lassoGene, "Type")]
+outTab = cbind(id = row.names(outTab), outTab)
+
+# 保存 LASSO 筛选后基因的表达矩阵
+write.table(outTab, file = "lasso.geneExp.txt", sep = "\t", quote = FALSE, row.names = FALSE)

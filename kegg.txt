@@ -1,0 +1,57 @@
+# ========= 环境准备（首次运行取消注释安装） =========
+# install.packages("colorspace")
+# install.packages("stringi")
+# install.packages("ggplot2")
+# if (!requireNamespace("BiocManager", quietly = TRUE)) install.packages("BiocManager")
+# BiocManager::install("org.Hs.eg.db")
+# BiocManager::install("DOSE")
+# BiocManager::install("clusterProfiler")
+# BiocManager::install("enrichplot")
+
+# ========= 加载所需包 =========
+library(clusterProfiler)
+library(org.Hs.eg.db)
+library(enrichplot)
+library(ggplot2)
+
+# ========= 参数设置 =========
+pvalueFilter <- 0.05      # 原始P值筛选阈值
+adjPvalFilter <- 0.05     # 校正后P值（FDR）筛选阈值
+colorSel <- if (adjPvalFilter > 0.05) "pvalue" else "p.adjust"
+
+# ========= 设置工作目录和输入文件 =========
+setwd("C:\\Users\\lexb\\Desktop\\geoARG\\09.KEGG")  # 修改为你自己的工作路径
+rt <- read.table("interGene.txt", header = FALSE, sep = "\t", check.names = FALSE)
+
+# ========= 基因ID转换（SYMBOL 转 EntrezID）=========
+genes <- unique(as.vector(rt[,1]))
+entrezIDs <- mget(genes, org.Hs.egSYMBOL2EG, ifnotfound = NA)  # 转换为 EntrezID
+entrezIDs <- as.character(entrezIDs)
+rt <- cbind(rt, entrezIDs)
+colnames(rt) <- c("genes", "entrezID")  # 统一列名
+rt <- rt[rt$entrezID != "NA", ]         # 去除无效ID
+gene <- rt$entrezID
+
+# ========= 执行 KEGG 富集分析 =========
+kk <- enrichKEGG(gene = gene, organism = "hsa", pvalueCutoff = 1, qvalueCutoff = 1)
+
+# ========= 整理 KEGG 结果并过滤显著通路 =========
+KEGG <- as.data.frame(kk)
+KEGG$geneID <- as.character(sapply(KEGG$geneID, function(x) {
+  paste(rt$genes[match(strsplit(x, "/")[[1]], as.character(rt$entrezID))], collapse = "/")
+}))
+KEGG <- KEGG[(KEGG$pvalue < pvalueFilter & KEGG$p.adjust < adjPvalFilter), ]
+write.table(KEGG, file = "KEGG.txt", sep = "\t", quote = FALSE, row.names = FALSE)
+
+# ========= 设置可视化展示数量 =========
+showNum <- min(30, nrow(KEGG))  # 若结果数不足30，自动调整展示数量
+
+# ========= 绘制柱状图 =========
+pdf(file = "barplot.pdf", width = 8, height = 7)
+barplot(kk, drop = TRUE, showCategory = showNum, label_format = 100, color = colorSel)
+dev.off()
+
+# ========= 绘制气泡图 =========
+pdf(file = "bubble.pdf", width = 8, height = 7)
+dotplot(kk, showCategory = showNum, orderBy = "GeneRatio", label_format = 100, color = colorSel)
+dev.off()

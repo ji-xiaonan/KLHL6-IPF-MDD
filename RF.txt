@@ -1,0 +1,65 @@
+# 1. 加载必要的包
+library(randomForest)
+library(ggplot2)
+library(pheatmap)
+library(dplyr)
+library(readxl)
+
+# 2. 设置文件路径
+data_dir <- "D:/360MoveData/Users/HUAWEI/Desktop/1/"
+venn_file <- paste0(data_dir, "vennData.csv")      # CSV格式的基因列表
+exp_file <- paste0(data_dir, "exp.xls")            # 表达矩阵
+sample_file <- paste0(data_dir, "sample.txt")      # 分组信息
+
+# 3. 读取文件
+genes_df <- read.csv(venn_file, header = TRUE, stringsAsFactors = FALSE)
+exp_data <- read.table(exp_file, header = TRUE, row.names = 1, sep = "\t")
+sample_data <- read.table(sample_file, header = TRUE, sep = "\t", stringsAsFactors = FALSE)
+
+# 4. 提取目标基因表达数据
+genes_of_interest <- genes_df$gene
+exp_selected <- exp_data[rownames(exp_data) %in% genes_of_interest, , drop = FALSE]
+write.csv(exp_selected, file = paste0(data_dir, "exp_selected.csv"))
+
+# 5. 转置表达矩阵：行为样本，列为基因
+exp_selected_t <- t(exp_selected)
+exp_selected_df <- as.data.frame(exp_selected_t)
+exp_selected_df$Sample <- rownames(exp_selected_df)
+
+# 6. 合并表达数据和分组信息
+merged_data <- merge(sample_data, exp_selected_df, by = "Sample")
+write.csv(merged_data, paste0(data_dir, "merged_exp_data.csv"), row.names = FALSE)
+
+# 7. 构建随机森林模型
+colnames(merged_data) <- make.names(colnames(merged_data))  # 处理非法字符
+set.seed(50)  # 设置随机种子
+rf_model <- randomForest(as.factor(dis) ~ ., data = merged_data[, -1], importance = TRUE)
+
+# 8. 提取变量重要性数据
+importance_data <- as.data.frame(importance(rf_model))
+importance_data$Gene <- rownames(importance_data)
+importance_data <- importance_data[order(importance_data$MeanDecreaseGini, decreasing = TRUE), ]
+top5 <- importance_data[1:5, ]
+
+# 9. 保存前5基因重要性表格
+write.csv(top5, file = paste0(data_dir, "top5_gene_importance.csv"), row.names = FALSE)
+
+# 10. 绘制条形图（前5）
+pdf(paste0(data_dir, "Top5_Gene_Importance_Barplot.pdf"), width = 8, height = 6)
+ggplot(top5, aes(x = reorder(Gene, MeanDecreaseGini), y = MeanDecreaseGini)) +
+  geom_bar(stat = "identity", fill = "steelblue") +
+  coord_flip() +
+  theme_minimal(base_size = 14) +
+  labs(title = "Top 5 Genes Important for Classifying IPF vs Control",
+       x = "Gene", y = "Mean Decrease in Gini")
+dev.off()
+
+# 11. 绘制点图（前5）
+pdf(paste0(data_dir, "Top5_Gene_Importance_Dotplot.pdf"), width = 8, height = 6)
+ggplot(top5, aes(x = reorder(Gene, MeanDecreaseGini), y = MeanDecreaseGini)) +
+  geom_point(size = 4, shape = 21, fill = "red", color = "black") +
+  coord_flip() +
+  theme_minimal(base_size = 14) +
+  labs(title = "Top 5 Gene Importance (Random Forest)", x = "Gene", y = "Mean Decrease in Gini")
+dev.off()
+
